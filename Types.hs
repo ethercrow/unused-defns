@@ -17,7 +17,8 @@ data SourceFile = SourceFile {
     sfNs :: !Namespace
   , sfRequires :: ![(Namespace, Namespace)]
   , sfDefns :: ![Var]
-  , sfUsages :: ![(Namespace, Var)]
+  , sfInternalUsages :: ![Var]
+  , sfExternalUsages :: ![(Namespace, Var)]
   }
 
 newtype CljString = CljString { unCljString :: T.Text }
@@ -55,13 +56,15 @@ surround :: Show a => String -> String -> [a] -> String
 surround l r xs = l ++ unwords (fmap show xs) ++ r
 
 instance Show SourceFile where
-    show (SourceFile n rs ds us) =
+    show (SourceFile n rs ds ius eus) =
         intercalate "\n" [ show n
                          , "Requires:"
                          , unlines (map show rs)
                          , "Defns:"
                          , unlines (map show ds)
-                         , "Usages:"
-                         , unlines (map show us)
+                         , "External usages:"
+                         , unlines (map show eus)
+                         , "Internal usages:"
+                         , unlines (map show ius)
                          , "\n"
                          ]

@@ -8,7 +8,7 @@ import Control.Comonad.Cofree
 import Control.Lens
 import Control.Monad
 import Data.Data.Lens
-import Data.List (isSuffixOf)
+import Data.List (isSuffixOf, sort, group)
 import Data.Maybe
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
@@ -37,28 +37,38 @@ main = do
 
     putStrLn $ "Parsed " ++ show (length sourceFiles) ++ " out of " ++ show (length filenames)
 
-    let allExternalUsages = concatMap sfUsages sourceFiles
+    let allExternalUsages = concatMap sfExternalUsages sourceFiles
+        publiclyUnusedDefns = [(sfNs file, defn) | file <- sourceFiles
+                                                 , defn <- sfDefns file
+                                                 , (sfNs file, defn) `notElem` allExternalUsages
+                                                 , defn `elem` sfInternalUsages file]
         unusedDefns = [(sfNs file, defn) | file <- sourceFiles
                                          , defn <- sfDefns file
-                                         , (sfNs file, defn) `notElem` allExternalUsages]
+                                         , (sfNs file, defn) `notElem` allExternalUsages
+                                         , defn `notElem` sfInternalUsages file]
     print sourceFiles
-    -- putStrLn "All external usages:"
-    -- print allExternalUsages
-    putStrLn "All unused defns:"
+    putStrLn "\nAll publicly unused defns:"
+    putStr $ concatMap (\(ns, var) -> T.unpack ns ++ "/" ++ T.unpack var ++ "\n")
+
+                       publiclyUnusedDefns
+    putStrLn "\nAll unused defns:"
     putStr $ concatMap (\(ns, var) -> T.unpack ns ++ "/" ++ T.unpack var ++ "\n")
                        unusedDefns
 
 mkSourceFile :: T.Text -> Either T.Text SourceFile
 mkSourceFile content =
     case parseText content of
-        Right sexps -> let msf = do (ns, requires) <- extractNamespaceAndRequires sexps
-                                    return $ SourceFile ns
-                                                        requires
-                                                        (extractDefns sexps)
-                                                        (extractUsages requires sexps)
-                       in case msf of
-                           Just sf -> Right sf
-                           Nothing -> Left "Parsing namespaces failed"
+        Right sexps ->
+            let defns = extractDefns sexps
+                msf = do (ns, requires) <- extractNamespaceAndRequires sexps
+                         return $ SourceFile ns
+                                             requires
+                                             defns
+                                             (extractInternalUsages defns sexps)
+                                             (extractExternalUsages requires sexps)
+            in case msf of
+                Just sf -> Right sf
+                Nothing -> Left "Parsing namespaces failed"
         Left diag -> Left diag
 
 extractNamespaceAndRequires :: AST -> Maybe (Namespace, [(Namespace, Namespace)])
@@ -87,13 +97,23 @@ extractDefns (_ :< List sexps) = mapMaybe go sexps
           go _ = Nothing
 extractDefns _ = []
 
-extractUsages :: [(Namespace, Namespace)] -> AST -> [(Namespace, Var)]
-extractUsages requires sexps = over (mapped . _1) fromJust
-                             $ filter (isJust . fst)
-                             $ over (mapped . _1) expandNs
-                             $ mapMaybe parseQualifiedName
-                             $ sexps ^.. biplate
+extractExternalUsages :: [(Namespace, Namespace)] -> AST -> [(Namespace, Var)]
+extractExternalUsages requires sexps
+    = over (mapped . _1) fromJust
+    $ filter (isJust . fst)
+    $ over (mapped . _1) expandNs
+    $ mapMaybe parseQualifiedName
+    $ sexps ^.. biplate
     where expandNs = flip lookup requires
+
+extractInternalUsages :: [Var] -> AST -> [Var]
+extractInternalUsages defns sexps
+    = sexps ^.. biplate
+    & filter (`elem` defns)
+    & sort
+    & group
+    & filter ((> 1) . length)
+    & fmap head
 
 parseQualifiedName :: T.Text -> Maybe (Namespace, Var)
 parseQualifiedName qname =
