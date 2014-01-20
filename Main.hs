@@ -4,11 +4,8 @@
 module Main where
 
 import Control.Applicative
-import Control.Comonad.Cofree
-import Control.Lens
 import Control.Monad
-import Data.Data.Lens
-import Data.List (isSuffixOf, sort, group)
+import Data.List (isSuffixOf)
 import Data.Maybe
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
@@ -16,8 +13,9 @@ import System.Directory
 import System.Environment
 import System.FilePath
 
-import Types
+import Analyzer
 import Parser
+import Types
 
 main :: IO ()
 main = do
@@ -46,14 +44,22 @@ main = do
                                          , defn <- sfDefns file
                                          , (sfNs file, defn) `notElem` allExternalUsages
                                          , defn `notElem` sfInternalUsages file]
+        redundantRequires = [(sfNs file, reqs) | file <- sourceFiles
+                                               , let reqs = extractRedundantRequires file
+                                               , not (null reqs)]
     print sourceFiles
-    putStrLn "\nAll publicly unused defns:"
+    putStrLn "\nPublicly unused defns:"
     putStr $ concatMap (\(ns, var) -> T.unpack ns ++ "/" ++ T.unpack var ++ "\n")
 
                        publiclyUnusedDefns
-    putStrLn "\nAll unused defns:"
+    putStrLn "\nUnused defns:"
     putStr $ concatMap (\(ns, var) -> T.unpack ns ++ "/" ++ T.unpack var ++ "\n")
                        unusedDefns
+    putStrLn "\nRedundant requires:"
+    putStr $ concatMap (\(ns, reqs) -> T.unpack ns ++ "\n"
+                                    ++ show reqs
+                                    ++ "\n")
+                       redundantRequires
 
 mkSourceFile :: T.Text -> Either T.Text SourceFile
 mkSourceFile content =
@@ -71,57 +77,6 @@ mkSourceFile content =
                 Nothing -> Left "Parsing namespaces failed"
         Left diag -> Left diag
 
-extractNamespaceAndRequires :: AST -> Maybe (Namespace, [(Namespace, Namespace)])
-extractNamespaceAndRequires (_ :< List (nsform : _)) =
-    case nsform of
-        (_ :< List ( (_ :< Atom "ns")
-                   : (_ :< Atom ns)
-                   : rest)) -> Just (ns, extractRequires rest)
-        _ -> Nothing
-extractNamespaceAndRequires _ = Nothing
-
-
-extractRequires :: [AST] -> [(Namespace, Namespace)]
-extractRequires = concatMap extract
-    where extract (_ :< List ((_ :< Atom ":require") : rs)) = go [] (rs ^.. biplate)
-          extract _ = []
-          go accum [] = accum
-          go accum (ns : ":as" : alias : rest) = go ((alias, ns) : accum) rest
-          go accum (ns : rest) = go ((ns, ns) : accum) rest
-
-extractDefns :: AST -> [Var]
-extractDefns (_ :< List sexps) = mapMaybe go sexps
-    where go (_ :< List ( (_ :< Atom "defn")
-                         : (_ :< Atom f)
-                         : _)) = Just f
-          go _ = Nothing
-extractDefns _ = []
-
-extractExternalUsages :: [(Namespace, Namespace)] -> AST -> [(Namespace, Var)]
-extractExternalUsages requires sexps
-    = over (mapped . _1) fromJust
-    $ filter (isJust . fst)
-    $ over (mapped . _1) expandNs
-    $ mapMaybe parseQualifiedName
-    $ sexps ^.. biplate
-    where expandNs = flip lookup requires
-
-extractInternalUsages :: [Var] -> AST -> [Var]
-extractInternalUsages defns sexps
-    = sexps ^.. biplate
-    & filter (`elem` defns)
-    & sort
-    & group
-    & filter ((> 1) . length)
-    & fmap head
-
-parseQualifiedName :: T.Text -> Maybe (Namespace, Var)
-parseQualifiedName qname =
-    let (ns, slashVar) = T.break (== '/') qname
-    in if T.null slashVar
-       then Nothing
-       else Just (ns, T.drop 1 slashVar)
-
 getRecursiveFiles :: FilePath -> IO [FilePath]
 getRecursiveFiles topdir = do
     names <- getDirectoryContents topdir
@@ -133,3 +88,4 @@ getRecursiveFiles topdir = do
             then getRecursiveFiles path
             else return [path]
     return (concat paths)
+
