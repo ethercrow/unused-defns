@@ -3,10 +3,11 @@
 module Analyzer where
 
 import Control.Comonad.Cofree
-import Control.Lens
+import Control.Lens hiding (children)
 import Data.Data.Lens
 import Data.List (sort, group, nub)
 import Data.Maybe
+import Data.Monoid
 import qualified Data.Text as T
 
 import Types
@@ -23,11 +24,20 @@ extractNamespaceAndRequires _ = Nothing
 
 extractRequires :: [AST] -> [(Namespace, Namespace)]
 extractRequires = concatMap extract
-    where extract (_ :< List ((_ :< Atom ":require") : rs)) = go [] (rs ^.. biplate)
+    where extract (_ :< List ((_ :< Atom ":require") : rs)) = go [] rs
           extract _ = []
           go accum [] = accum
-          go accum (ns : ":as" : alias : rest) = go ((alias, ns) : accum) rest
-          go accum (ns : rest) = go ((ns, ns) : accum) rest
+          go accum (r:rest) = case r of
+            _ :< Atom ns -> go ((ns, ns) : accum) rest
+            _ :< Vec [_ :< Atom ns] -> go ((ns, ns) : accum) rest
+            _ :< Vec atoms -> case atoms ^.. biplate of
+                    [ns, ":as", alias] -> go ((alias, ns) : accum) rest
+                    (parent : children) ->
+                        go ([ (parent <> "." <> child, parent <> "." <> child)
+                            | child <- children]
+                              <> accum)
+                           rest
+            _ -> go accum rest
 
 extractDefns :: AST -> [Var]
 extractDefns (_ :< List sexps) = mapMaybe go sexps
